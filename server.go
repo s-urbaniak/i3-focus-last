@@ -27,7 +27,8 @@ func startServer(sf switchFunc) error {
 		func() {
 			conn, err := l.AcceptUnix()
 			if err != nil {
-				panic(err)
+				log.Println(err)
+				return
 			}
 			defer conn.Close()
 

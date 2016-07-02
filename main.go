@@ -28,6 +28,9 @@ func focused(root *node) *node {
 }
 
 func main() {
+	log.SetPrefix("i3-focus-last ")
+	log.SetFlags(log.Lshortfile)
+
 	if len(os.Args) > 1 && os.Args[1] == "switch" {
 		if err := remoteSwitch(); err != nil {
 			log.Fatal(err)
@@ -78,11 +81,14 @@ func main() {
 		for {
 			ev, err := c.rx()
 			if err != nil {
-				log.Fatal(err)
+				log.Println(err)
+				continue
 			}
 			evChan <- ev
 		}
 	}()
+
+	log.Println("starting i3-focus-last")
 
 	for {
 		select {

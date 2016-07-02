@@ -4,8 +4,8 @@ This is a small utility for the i3 window manager [1] which enables Alt-Tab like
 
 Add these lines to your i3 config:
 
-    bindsym $mod+Tab exec ~/src/go/bin/i3-focus-last switch
-    exec --no-startup-id "~/src/go/bin/i3-focus-last"
+    bindsym $mod+Tab exec ~/path-to/i3-focus-last switch
+    exec --no-startup-id "~/path-to/i3-focus-last"
 
 At i3 startup i3-focus-last is started and keeps track of the currently and previously focused window. If one presses `$mod-Tab` i3-focus-last instructs the i3 window manager to switch to the previously focused window.
 
