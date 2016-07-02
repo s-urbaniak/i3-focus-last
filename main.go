@@ -94,7 +94,7 @@ func main() {
 		select {
 		case ev := <-evChan:
 			if ev[0] == '[' {
-				break // some other response, not a struct
+				continue // some other response, not a struct
 			}
 
 			evJson := struct {
@@ -117,7 +117,7 @@ func main() {
 			history[1] = evJson.Container.ID
 		case <-switchChan:
 			if history[0] < 0 {
-				break
+				continue
 			}
 
 			cmd := fmt.Sprintf("[con_id=%d] focus", history[0])
