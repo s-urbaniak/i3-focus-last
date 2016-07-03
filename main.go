@@ -27,6 +27,34 @@ func focused(root *node) *node {
 	return nil
 }
 
+func evLoop(evChan chan []byte) {
+	var c i3Client
+
+	if err := c.Connect(); err != nil {
+		log.Fatal(err)
+	}
+
+	if err := c.tx(subscribe, []byte(`["window"]`)); err != nil {
+		log.Fatal(err)
+	}
+
+	for {
+		ev, err := c.rx()
+		if err != nil {
+			c.Close()
+
+			if err := c.Reconnect(10); err != nil {
+				log.Fatal(err)
+			}
+
+			if _, err := c.msg(subscribe, []byte(`["window"]`)); err != nil {
+				log.Fatal(err)
+			}
+		}
+		evChan <- ev
+	}
+}
+
 func main() {
 	log.SetPrefix("i3-focus-last ")
 	log.SetFlags(log.Lshortfile)
@@ -72,28 +100,15 @@ func main() {
 		history[1] = fn.ID
 	}
 
-	if err := c.tx(subscribe, []byte(`["window"]`)); err != nil {
-		log.Fatal(err)
-	}
-
 	evChan := make(chan []byte)
-	go func() {
-		for {
-			ev, err := c.rx()
-			if err != nil {
-				log.Println(err)
-				continue
-			}
-			evChan <- ev
-		}
-	}()
+	go evLoop(evChan)
 
 	log.Println("starting i3-focus-last")
 
 	for {
 		select {
 		case ev := <-evChan:
-			if ev[0] == '[' {
+			if len(ev) == 0 || ev[0] == '[' {
 				continue // some other response, not a struct
 			}
 
@@ -122,7 +137,10 @@ func main() {
 
 			cmd := fmt.Sprintf("[con_id=%d] focus", history[0])
 			if err := c.tx(command, []byte(cmd)); err != nil {
-				log.Fatal(err)
+				c.Close()
+				if err := c.Reconnect(10); err != nil {
+					log.Fatal(err)
+				}
 			}
 		}
 	}

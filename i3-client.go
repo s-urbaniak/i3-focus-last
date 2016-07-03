@@ -5,8 +5,10 @@ import (
 	"errors"
 	"io"
 	"io/ioutil"
+	"log"
 	"net"
 	"os/exec"
+	"time"
 )
 
 type msgType uint32
@@ -50,6 +52,20 @@ func (c *i3Client) Connect() error {
 
 	c.rwc = conn
 	return nil
+}
+
+func (c *i3Client) Reconnect(maxRetries int) (err error) {
+	for i := 0; i < maxRetries; i++ {
+		if err = c.Connect(); err != nil {
+			log.Printf("connect failed, retrying %d/%d\n", i+1, maxRetries)
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		return nil
+	}
+
+	return err
 }
 
 func (c *i3Client) Close() error {
