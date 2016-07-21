@@ -79,16 +79,12 @@ func main() {
 	if err := c.Connect(); err != nil {
 		log.Fatal(err)
 	}
-	defer c.Close()
 
-	if err := c.tx(tree, nil); err != nil {
-		log.Fatal(err)
-	}
-
-	tree, err := c.rx()
+	tree, err := c.msg(tree, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
+	c.Close()
 
 	var root node
 	if err := json.Unmarshal(tree, &root); err != nil {
@@ -128,11 +124,14 @@ func main() {
 				continue
 			}
 
-			history[0] = history[1]
-			history[1] = evJson.Container.ID
+			history[0], history[1] = history[1], evJson.Container.ID
 		case <-switchChan:
 			if history[0] < 0 {
 				continue
+			}
+
+			if err := c.Connect(); err != nil {
+				log.Fatal(err)
 			}
 
 			cmd := fmt.Sprintf("[con_id=%d] focus", history[0])
@@ -142,6 +141,8 @@ func main() {
 					log.Fatal(err)
 				}
 			}
+
+			c.Close()
 		}
 	}
 }
