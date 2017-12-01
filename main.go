@@ -3,17 +3,17 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"net"
 	"os"
+	"time"
+
+	"github.com/go-kit/kit/log"
+	"github.com/go-kit/kit/util/conn"
+	"github.com/pkg/errors"
+	"github.com/s-urbaniak/i3-focus-last/i3"
 )
 
-type node struct {
-	ID      int    `json:"id"`
-	Focused bool   `json:"focused"`
-	Nodes   []node `json:"nodes"`
-}
-
-func focused(root *node) *node {
+func focused(root *i3.Node) *i3.Node {
 	if root.Focused {
 		return root
 	}
@@ -27,42 +27,44 @@ func focused(root *node) *node {
 	return nil
 }
 
-func evLoop(evChan chan []byte) {
-	var c i3Client
+func evLoop(evChan chan []byte, cm *conn.Manager, l log.Logger) (err error) {
+	defer func() {
+		if err != nil {
+			l.Log("err", err)
+			os.Exit(1)
+		}
+	}()
 
-	if err := c.Connect(); err != nil {
-		log.Fatal(err)
+	c := cm.Take()
+	if c == nil {
+		return errors.New("no connections available")
 	}
 
-	if err := c.tx(subscribe, []byte(`["window"]`)); err != nil {
-		log.Fatal(err)
+	i3c := i3.New(c)
+	if err := i3c.Subscribe([]string{"window"}); err != nil {
+		return errors.New("subscribe for window events failed")
 	}
 
 	for {
-		ev, err := c.rx()
+		ev, err := i3c.ReadMsg()
 		if err != nil {
-			c.Close()
-
-			if err := c.Reconnect(10); err != nil {
-				log.Fatal(err)
-			}
-
-			if _, err := c.msg(subscribe, []byte(`["window"]`)); err != nil {
-				log.Fatal(err)
-			}
+			return err
 		}
+
 		evChan <- ev
 	}
 }
 
 func main() {
-	log.SetPrefix("i3-focus-last ")
-	log.SetFlags(log.Lshortfile)
+	w := log.NewSyncWriter(os.Stderr)
+	logger := log.NewLogfmtLogger(w)
 
 	if len(os.Args) > 1 && os.Args[1] == "switch" {
 		if err := remoteSwitch(); err != nil {
-			log.Fatal(err)
+			logger.Log("err", err)
+			os.Exit(1)
 		}
+
 		os.Exit(0)
 	}
 
@@ -71,35 +73,41 @@ func main() {
 
 	go func() {
 		if err := startServer(switchFn); err != nil {
-			log.Fatal(err)
+			logger.Log("err", err)
+			os.Exit(1)
 		}
 	}()
 
-	var c i3Client
-	if err := c.Connect(); err != nil {
-		log.Fatal(err)
-	}
-
-	tree, err := c.msg(tree, nil)
+	var c net.Conn
+	adr, err := i3.Socketpath()
 	if err != nil {
-		log.Fatal(err)
+		logger.Log("err", err)
+		os.Exit(1)
 	}
-	c.Close()
 
-	var root node
-	if err := json.Unmarshal(tree, &root); err != nil {
-		log.Fatal(err)
+	cm := conn.NewManager(i3.Dial, "unix", adr, time.After, logger)
+	c = cm.Take()
+	if c == nil {
+		logger.Log("err", "no connections available")
+		os.Exit(1)
+	}
+
+	i3c := i3.New(c)
+	root, err := i3c.Tree()
+	if err != nil {
+		logger.Log("err", "tree command failed")
+		os.Exit(1)
 	}
 
 	history := []int{-1, -1}
-	if fn := focused(&root); fn != nil {
+	if fn := focused(root); fn != nil {
 		history[1] = fn.ID
 	}
 
 	evChan := make(chan []byte)
-	go evLoop(evChan)
+	go evLoop(evChan, cm, logger)
 
-	log.Println("starting i3-focus-last")
+	logger.Log("status", "i3-focus-last started")
 
 	for {
 		select {
@@ -116,7 +124,7 @@ func main() {
 			}{}
 
 			if err := json.Unmarshal(ev, &evJson); err != nil {
-				log.Println(err)
+				logger.Log("err", err)
 				continue
 			}
 
@@ -130,19 +138,10 @@ func main() {
 				continue
 			}
 
-			if err := c.Connect(); err != nil {
-				log.Fatal(err)
+			if err := i3c.Command(fmt.Sprintf("[con_id=%d] focus", history[0])); err != nil {
+				logger.Log("err", err)
+				os.Exit(1)
 			}
-
-			cmd := fmt.Sprintf("[con_id=%d] focus", history[0])
-			if err := c.tx(command, []byte(cmd)); err != nil {
-				c.Close()
-				if err := c.Reconnect(10); err != nil {
-					log.Fatal(err)
-				}
-			}
-
-			c.Close()
 		}
 	}
 }
