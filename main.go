@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -69,7 +70,7 @@ func switchWindow(id int, take connTaker) error {
 
 	client := i3.NewClient(conn)
 	if err := client.Command(fmt.Sprintf("[con_id=%d] focus", id)); err != nil {
-		return fmt.Errorf("focus failed", err)
+		return fmt.Errorf("focus failed: %v", err)
 	}
 
 	return nil
@@ -118,24 +119,49 @@ func newConnectionManager(logger log.Logger) (*conn.Manager, error) {
 	return conn.NewManager(dialer, "", "", time.After, log.With(logger, "component", "manager")), nil
 }
 
+var (
+	unique      = flag.Bool("unique", false, "unique windows history")
+	permanence  = flag.Duration("permanence", 800*time.Millisecond, "eg. 1s or 500ms")
+	historySize = flag.Int("history-size", 20, "history size of focused windows")
+)
+
 func main() {
+	flag.Usage = flag.PrintDefaults
+	flag.Parse()
+
 	w := log.NewSyncWriter(os.Stderr)
 	logger := log.NewLogfmtLogger(w)
 
-	if len(os.Args) > 1 && os.Args[1] == "switch" {
-		if err := remoteSwitch(); err != nil {
+	args := flag.Args()
+	if len(args) > 0 {
+		var cmd byte
+		switch args[0] {
+		case "switch":
+			cmd = 's'
+		case "next":
+			cmd = 'n'
+		case "prev":
+			cmd = 'p'
+		default:
+			logger.Log("err", fmt.Errorf("unsupported command"))
+			os.Exit(0)
+		}
+		if err := remoteSwitch(cmd); err != nil {
 			logger.Log("err", fmt.Errorf("error switching: %v", err))
 			os.Exit(1)
 		}
-
 		os.Exit(0)
 	}
 
-	switchChan := make(chan struct{})
-	switchFn := func() { switchChan <- struct{}{} }
+	lastChan := make(chan struct{})
+	nextChan := make(chan struct{})
+	prevChan := make(chan struct{})
+	switchFn := func() { lastChan <- struct{}{} }
+	nextFn := func() { nextChan <- struct{}{} }
+	prevFn := func() { prevChan <- struct{}{} }
 
 	go func() {
-		if err := startServer(switchFn); err != nil {
+		if err := startServer(switchFn, nextFn, prevFn); err != nil {
 			logger.Log("err", fmt.Errorf("error starting server: %v", err))
 			os.Exit(1)
 		}
@@ -162,9 +188,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	history := []int{-1, -1}
+	history := newHistory(*historySize)
 	if fn := focused(root); fn != nil {
-		history[1] = fn.ID
+		history.push(fn.ID)
 	}
 
 	evChan := make(chan []byte)
@@ -172,9 +198,10 @@ func main() {
 
 	logger.Log("status", "i3-focus-last started")
 
+	focusedEv := withPermanence(evChan, *permanence)
 	for {
 		select {
-		case ev := <-evChan:
+		case ev := <-focusedEv:
 			logger.Log("event", string(ev))
 
 			if len(ev) == 0 || ev[0] == '[' {
@@ -196,18 +223,191 @@ func main() {
 			if evJson.Change != "focus" {
 				continue
 			}
+			history.push(evJson.Container.ID)
+			if *unique {
+				history.unique()
+			}
 
-			history[0], history[1] = history[1], evJson.Container.ID
-
-		case <-switchChan:
-			if history[0] < 0 {
+		case <-lastChan:
+			if !history.canVisit() {
 				continue
 			}
 
-			if err := switchWindow(history[0], taker); err != nil {
+			id := history.visitLast()
+			if err := switchWindow(id, taker); err != nil {
 				logger.Log("err", fmt.Errorf("focus command failed: %v", err))
 				os.Exit(1)
 			}
+
+		case <-prevChan:
+			if !history.canVisit() {
+				continue
+			}
+			id, ok := history.visitPrev()
+			if !ok {
+				logger.Log("warn", fmt.Errorf("could not get previous window id"))
+			}
+			if err := switchWindow(id, taker); err != nil {
+				logger.Log("err", fmt.Errorf("focus command failed: %v", err))
+			}
+
+		case <-nextChan:
+			if !history.canVisit() {
+				continue
+			}
+			id, ok := history.visitNext()
+			if !ok {
+				logger.Log("warn", fmt.Errorf("could not get previous window id"))
+			}
+			if err := switchWindow(id, taker); err != nil {
+				logger.Log("err", fmt.Errorf("focus command failed: %v", err))
+			}
 		}
 	}
+}
+
+func withPermanence(evCh <-chan []byte, per time.Duration) <-chan []byte {
+	out := make(chan []byte)
+
+	go func() {
+		defer close(out)
+		var hold []byte
+		timer := time.NewTimer(per)
+		for {
+			select {
+			case hold = <-evCh:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(per)
+
+			case <-timer.C:
+				// fmt.Println("window focused...")
+				out <- hold
+			}
+		}
+	}()
+
+	return out
+}
+
+type history struct {
+	stack []int
+	cur   int
+	last  int
+	size  int
+}
+
+func newHistory(size int) history {
+	return history{
+		size: size,
+	}
+}
+
+func (h *history) markLast() {
+	h.last = h.cur
+}
+
+func (h *history) push(id int) {
+	if len(h.stack) > 0 {
+		if h.stack[h.cur] == id {
+			return
+		}
+	} else {
+		h.stack = append(h.stack, id)
+		h.cur = 0
+		return
+	}
+
+	h.markLast()
+
+	h.cur++
+	if h.cur == len(h.stack) {
+		h.stack = append(h.stack, id)
+	} else {
+		// mid push
+		h.stack[h.cur] = id
+		h.stack = h.stack[:h.cur+1]
+	}
+
+	if len(h.stack) >= h.size {
+		h.stack = h.stack[1:]
+		h.cur--
+	}
+}
+
+func (h *history) visitPrev() (int, bool) {
+	if len(h.stack) == 0 {
+		return 0, false
+	}
+	h.markLast()
+
+	if h.cur == 0 {
+		h.cur = len(h.stack) - 1
+	} else {
+		h.cur--
+	}
+
+	return h.stack[h.cur], true
+}
+
+func (h *history) visitNext() (int, bool) {
+	if len(h.stack) == 0 {
+		return 0, false
+	}
+	h.markLast()
+
+	if h.cur == len(h.stack)-1 {
+		h.cur = 0
+	} else {
+		h.cur++
+	}
+
+	return h.stack[h.cur], true
+}
+
+func (h *history) visitLast() int {
+	ret := h.stack[h.last]
+	h.last, h.cur = h.cur, h.last
+	return ret
+}
+
+func (h *history) canVisit() bool {
+	return len(h.stack) > 1
+}
+
+func (h *history) unique() {
+	if !h.canVisit() {
+		return
+	}
+
+	set := make(map[int]struct{})
+	var newCur int
+	var newStack []int
+	for i := len(h.stack) - 1; i >= 0; i-- {
+		if _, ok := set[h.stack[i]]; ok {
+			continue
+		}
+		set[h.stack[i]] = struct{}{}
+		newStack = append(newStack, h.stack[i])
+		if h.stack[i] == h.stack[h.cur] {
+			newCur = len(newStack) - 1
+		}
+	}
+
+	// reverse
+	var swapped bool
+	for i, j := 0, len(newStack)-1; i < j; i, j = i+1, j-1 {
+		if newCur == i && !swapped {
+			newCur = j
+			swapped = true
+		}
+		newStack[i], newStack[j] = newStack[j], newStack[i]
+	}
+
+	h.stack = newStack
+	h.cur = newCur
 }
