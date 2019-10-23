@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-kit/kit/log"
@@ -120,9 +121,10 @@ func newConnectionManager(logger log.Logger) (*conn.Manager, error) {
 }
 
 var (
-	unique      = flag.Bool("unique", false, "unique windows history")
-	permanence  = flag.Duration("permanence", 800*time.Millisecond, "eg. 1s or 500ms")
-	historySize = flag.Int("history-size", 80, "history size of focused windows")
+	unique         = flag.Bool("unique", false, "unique windows history")
+	permanence     = flag.Duration("permanence", 800*time.Millisecond, "eg. 1s or 500ms")
+	historySize    = flag.Int("history-size", 80, "history size of focused windows")
+	ignoreFloating = flag.Bool("ignore-floating", true, "ignore floating")
 )
 
 func main() {
@@ -227,6 +229,10 @@ func main() {
 				continue
 			}
 
+			if *ignoreFloating {
+
+			}
+
 			if evJson.Change != "focus" {
 				continue
 			}
@@ -277,7 +283,10 @@ func withPermanence(evCh <-chan []byte, per time.Duration) <-chan []byte {
 	out := make(chan []byte)
 
 	type change struct {
-		Change string `json:"change"`
+		Change    string `json:"change"`
+		Container struct {
+			Floating string `json:"floating"`
+		} `json:"container"`
 	}
 
 	go func() {
@@ -308,10 +317,15 @@ func withPermanence(evCh <-chan []byte, per time.Duration) <-chan []byte {
 					out <- hold
 					continue
 				}
+
+				if *ignoreFloating && strings.Contains(ev.Container.Floating, "on") {
+					continue
+				}
+
 				timer.Reset(per)
 
 			case <-timer.C:
-				fmt.Println("\n\nwindow focused...")
+				// fmt.Println("\n\nwindow focused...")
 				out <- hold
 			}
 		}
