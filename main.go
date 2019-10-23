@@ -122,9 +122,10 @@ func newConnectionManager(logger log.Logger) (*conn.Manager, error) {
 
 var (
 	unique         = flag.Bool("unique", false, "unique windows history")
+	cycle          = flag.Bool("cycle", false, "cycle windows history")
+	ignoreFloating = flag.Bool("ignore-floating", true, "ignore floating")
 	permanence     = flag.Duration("permanence", 800*time.Millisecond, "eg. 1s or 500ms")
 	historySize    = flag.Int("history-size", 80, "history size of focused windows")
-	ignoreFloating = flag.Bool("ignore-floating", true, "ignore floating")
 )
 
 func main() {
@@ -190,7 +191,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	history := newHistory(*historySize)
+	history := newHistory(*historySize, *cycle)
 	if fn := focused(root); fn != nil {
 		history.push(fn.ID)
 	}
@@ -339,11 +340,13 @@ type history struct {
 	cur   int
 	last  int
 	size  int
+	cycle bool
 }
 
-func newHistory(size int) history {
+func newHistory(size int, cycle bool) history {
 	return history{
-		size: size,
+		size:  size,
+		cycle: cycle,
 	}
 }
 
@@ -386,7 +389,9 @@ func (h *history) visitPrev() (int, bool) {
 	h.markLast()
 
 	if h.cur == 0 {
-		h.cur = len(h.stack) - 1
+		if h.cycle {
+			h.cur = len(h.stack) - 1
+		}
 	} else {
 		h.cur--
 	}
@@ -401,7 +406,9 @@ func (h *history) visitNext() (int, bool) {
 	h.markLast()
 
 	if h.cur == len(h.stack)-1 {
-		h.cur = 0
+		if h.cycle {
+			h.cur = 0
+		}
 	} else {
 		h.cur++
 	}
