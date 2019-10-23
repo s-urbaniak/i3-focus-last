@@ -122,7 +122,7 @@ func newConnectionManager(logger log.Logger) (*conn.Manager, error) {
 var (
 	unique      = flag.Bool("unique", false, "unique windows history")
 	permanence  = flag.Duration("permanence", 800*time.Millisecond, "eg. 1s or 500ms")
-	historySize = flag.Int("history-size", 20, "history size of focused windows")
+	historySize = flag.Int("history-size", 80, "history size of focused windows")
 )
 
 func main() {
@@ -199,10 +199,11 @@ func main() {
 	logger.Log("status", "i3-focus-last started")
 
 	focusedEv := withPermanence(evChan, *permanence)
+	// focusedEv := evChan
 	for {
 		select {
 		case ev := <-focusedEv:
-			logger.Log("event", string(ev))
+			// logger.Log("event", string(ev))
 
 			if len(ev) == 0 || ev[0] == '[' {
 				continue // some other response, not a JSON object
@@ -217,6 +218,12 @@ func main() {
 
 			if err := json.Unmarshal(ev, &evJson); err != nil {
 				logger.Log("err", fmt.Errorf("error unmarshaling event: %v", err))
+				continue
+			}
+			fmt.Printf("change: %q\n", evJson.Change)
+
+			if evJson.Change == "close" {
+				history.remove(evJson.Container.ID)
 				continue
 			}
 
@@ -269,6 +276,10 @@ func main() {
 func withPermanence(evCh <-chan []byte, per time.Duration) <-chan []byte {
 	out := make(chan []byte)
 
+	type change struct {
+		Change string `json:"change"`
+	}
+
 	go func() {
 		defer close(out)
 		var hold []byte
@@ -282,10 +293,25 @@ func withPermanence(evCh <-chan []byte, per time.Duration) <-chan []byte {
 					default:
 					}
 				}
+
+				if len(hold) > 0 && hold[0] == '[' {
+					continue
+				}
+
+				var ev change
+				err := json.Unmarshal(hold, &ev)
+				if err != nil {
+					fmt.Println("unknown event")
+				}
+
+				if ev.Change == "close" {
+					out <- hold
+					continue
+				}
 				timer.Reset(per)
 
 			case <-timer.C:
-				// fmt.Println("window focused...")
+				fmt.Println("\n\nwindow focused...")
 				out <- hold
 			}
 		}
@@ -377,6 +403,29 @@ func (h *history) visitLast() int {
 
 func (h *history) canVisit() bool {
 	return len(h.stack) > 1
+}
+
+func (h *history) remove(id int) {
+	var newStack []int
+	var newCur, newLast int
+	var lastSkip int
+	for i, v := range h.stack {
+		if id == v {
+			if i < h.last {
+				lastSkip++
+			}
+			continue
+		}
+		if h.cur < i {
+			newCur++
+		}
+		newStack = append(newStack, v)
+	}
+	newLast = h.last - lastSkip
+
+	h.stack = newStack
+	h.cur = newCur
+	h.last = newLast
 }
 
 func (h *history) unique() {

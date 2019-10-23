@@ -33,6 +33,9 @@ func startServer(last, next, prev switchFunc) error {
 			defer conn.Close()
 
 			b, err := ioutil.ReadAll(io.LimitReader(conn, 1))
+			if err != nil {
+				log.Println(err)
+			}
 
 			switch b[0] {
 			case 's':
